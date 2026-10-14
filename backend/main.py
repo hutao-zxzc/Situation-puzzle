@@ -13,10 +13,12 @@ from sqlalchemy.orm import Session
 from database import init_db, get_db, SessionLocal
 from models import Puzzle, GameSession, GameState
 from llm_service import llm_service
+from review_service import generate_review
 from puzzles_data import PRESET_PUZZLES
 
 # ========== 内存游戏状态存储 ==========
 game_states: dict[str, GameState] = {}
+
 
 # ========== 启动时初始化 ==========
 @asynccontextmanager
@@ -41,6 +43,7 @@ async def lifespan(app: FastAPI):
     yield
     game_states.clear()
 
+
 app = FastAPI(
     title="AI海龟汤",
     description="AI驱动的海龟汤解谜游戏",
@@ -56,33 +59,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ========== Pydantic 模型 ==========
 class LLMConfig(BaseModel):
     api_key: str
     base_url: str = "https://api.moonshot.cn/v1"
     model: str = "moonshot-v1-8k"
 
+
 class StartGameRequest(BaseModel):
     mode: str  # "ai" | "preset"
     puzzle_id: Optional[int] = None
     llm_config: LLMConfig
 
+
 class AskRequest(BaseModel):
     question: str
     llm_config: LLMConfig
+
 
 class GuessRequest(BaseModel):
     guess: str
     llm_config: LLMConfig
 
+
 class HintRequest(BaseModel):
     llm_config: LLMConfig
+
 
 class ReviewRequest(BaseModel):
     llm_config: LLMConfig
 
+
 class GeneratePuzzleRequest(BaseModel):
     llm_config: LLMConfig
+
 
 class PuzzleOut(BaseModel):
     id: int
@@ -95,14 +106,17 @@ class PuzzleOut(BaseModel):
     class Config:
         from_attributes = True
 
+
 # ========== 全局异常处理 ==========
 import traceback
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     stack = traceback.format_exc()
     print(f"[ERROR] {request.url.path}: {exc}\n{stack}")
     return {"detail": f"服务器内部错误: {str(exc)}\n{stack}"}
+
 
 # ========== API 路由 ==========
 
@@ -111,6 +125,7 @@ def list_puzzles(db: Session = Depends(get_db)):
     """获取所有预置题库"""
     puzzles = db.query(Puzzle).filter(Puzzle.source == "preset").all()
     return puzzles
+
 
 @app.post("/puzzle/generate")
 async def generate_puzzle(req: GeneratePuzzleRequest, db: Session = Depends(get_db)):
@@ -135,6 +150,7 @@ async def generate_puzzle(req: GeneratePuzzleRequest, db: Session = Depends(get_
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成题目失败: {str(e)}")
+
 
 @app.post("/game/start")
 async def start_game(req: StartGameRequest, db: Session = Depends(get_db)):
@@ -204,6 +220,7 @@ async def start_game(req: StartGameRequest, db: Session = Depends(get_db)):
         "max_hints": state.max_hints,
     }
 
+
 @app.post("/game/{session_id}/ask")
 async def ask_question(session_id: str, req: AskRequest, db: Session = Depends(get_db)):
     """玩家提问"""
@@ -265,6 +282,7 @@ async def ask_question(session_id: str, req: AskRequest, db: Session = Depends(g
         "hint": result.get("reasoning", "")[:50],
         "history": state.history
     }
+
 
 @app.post("/game/{session_id}/hint")
 async def get_hint(session_id: str, req: HintRequest):
@@ -378,6 +396,7 @@ async def guess_truth(session_id: str, req: GuessRequest, db: Session = Depends(
         "soup_base": state.soup_base if is_correct else None
     }
 
+
 @app.post("/game/{session_id}/review")
 async def review_game(session_id: str, req: ReviewRequest, db: Session = Depends(get_db)):
     """复盘游戏"""
@@ -389,30 +408,21 @@ async def review_game(session_id: str, req: ReviewRequest, db: Session = Depends
         state.status = "revealed"
         await _save_game_end(db, state)
 
-    try:
-        review = await llm_service.generate_review(
-            soup_surface=state.soup_surface,
-            soup_base=state.soup_base,
-            key_details=state.key_details,
-            history=state.history,
-            hints_used=state.hints_used,
-            status=state.status,
-            llm_config=req.llm_config.model_dump()
-        )
-    except Exception as e:
-        review = {
-            "total_rounds": state.round,
-            "hints_used": state.hints_used,
-            "highlights": "玩家积极提问，尝试了多种推理方向。",
-            "blind_spots": "部分关键线索未能及时发现，建议更仔细地分析汤面细节。",
-            "soup_base": state.soup_base,
-            "verdict": "继续努力，下次一定能更快破案！"
-        }
+    review = await generate_review(
+        soup_surface=state.soup_surface,
+        soup_base=state.soup_base,
+        key_details=state.key_details,
+        history=state.history,
+        hints_used=state.hints_used,
+        status=state.status,
+        llm_config=req.llm_config.model_dump()
+    )
 
     return {
         **review,
         "status": state.status,
-        "title": db.query(Puzzle).filter(Puzzle.id == state.puzzle_id).first().title if db.query(Puzzle).filter(Puzzle.id == state.puzzle_id).first() else "",
+        "title": db.query(Puzzle).filter(Puzzle.id == state.puzzle_id).first().title if db.query(Puzzle).filter(
+            Puzzle.id == state.puzzle_id).first() else "",
         "soup_surface": state.soup_surface,
     }
 
@@ -435,6 +445,7 @@ async def reveal_answer(session_id: str, db: Session = Depends(get_db)):
         "status": state.status
     }
 
+
 @app.get("/game/{session_id}")
 def get_game_state(session_id: str):
     """获取游戏状态"""
@@ -454,6 +465,7 @@ def get_game_state(session_id: str):
         "max_hints": state.max_hints,
     }
 
+
 @app.get("/game/{session_id}/history")
 def get_game_history(session_id: str):
     """获取游戏历史"""
@@ -467,16 +479,18 @@ def get_game_history(session_id: str):
         "max_rounds": state.max_rounds
     }
 
+
 # ========== 调试端点 ==========
 class DebugLLMRequest(BaseModel):
     llm_config: LLMConfig
+
 
 @app.post("/debug/llm")
 async def debug_llm(req: DebugLLMRequest):
     """调试用：验证 LLM 配置是否正确传递"""
     cfg = req.llm_config.model_dump()
     api_key = cfg.get("api_key", "").strip()
-    
+
     # 安全地返回 key 的部分信息（不暴露完整 key）
     return {
         "base_url": cfg.get("base_url"),
@@ -489,16 +503,18 @@ async def debug_llm(req: DebugLLMRequest):
         "starts_with_sk": api_key.startswith("sk-"),
     }
 
+
 # ========== 调试端点 ==========
 class DebugLLMRequest(BaseModel):
     llm_config: LLMConfig
+
 
 @app.post("/debug/llm")
 async def debug_llm(req: DebugLLMRequest):
     """调试用：验证 LLM 配置是否正确传递"""
     cfg = req.llm_config.model_dump()
     api_key = cfg.get("api_key", "").strip()
-    
+
     # 安全地返回 key 的部分信息（不暴露完整 key）
     return {
         "base_url": cfg.get("base_url"),
@@ -510,6 +526,7 @@ async def debug_llm(req: DebugLLMRequest):
         "has_newline": "\n" in api_key,
         "starts_with_sk": api_key.startswith("sk-"),
     }
+
 
 # ========== 辅助函数 ==========
 
@@ -528,7 +545,9 @@ async def _save_game_end(db: Session, state: GameState):
             session.duration_seconds = int(duration)
         db.commit()
 
+
 # ========== 启动 ==========
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
