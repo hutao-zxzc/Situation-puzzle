@@ -75,6 +75,12 @@ class GuessRequest(BaseModel):
     guess: str
     llm_config: LLMConfig
 
+class HintRequest(BaseModel):
+    llm_config: LLMConfig
+
+class ReviewRequest(BaseModel):
+    llm_config: LLMConfig
+
 class GeneratePuzzleRequest(BaseModel):
     llm_config: LLMConfig
 
@@ -193,7 +199,9 @@ async def start_game(req: StartGameRequest, db: Session = Depends(get_db)):
         "round": 0,
         "max_rounds": 30,
         "status": "playing",
-        "mode": req.mode
+        "mode": req.mode,
+        "hints_used": state.hints_used,
+        "max_hints": state.max_hints,
     }
 
 @app.post("/game/{session_id}/ask")
@@ -258,6 +266,73 @@ async def ask_question(session_id: str, req: AskRequest, db: Session = Depends(g
         "history": state.history
     }
 
+@app.post("/game/{session_id}/hint")
+async def get_hint(session_id: str, req: HintRequest):
+    """获取提示"""
+    state = game_states.get(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="游戏不存在或已过期")
+
+    if state.status != "playing":
+        raise HTTPException(status_code=400, detail=f"游戏已结束，状态: {state.status}")
+
+    if state.hints_used >= state.max_hints:
+        return {
+            "hint": "💡 提示次数已用尽",
+            "hints_used": state.hints_used,
+            "max_hints": state.max_hints,
+            "round": state.round,
+        }
+
+    if state.round >= state.max_rounds:
+        state.status = "lost"
+        return {
+            "hint": "⏰ 已达到最大回合数，无法使用提示",
+            "hints_used": state.hints_used,
+            "max_hints": state.max_hints,
+            "round": state.round,
+            "status": state.status,
+        }
+
+    try:
+        hint = await llm_service.generate_hint(
+            soup_surface=state.soup_surface,
+            soup_base=state.soup_base,
+            key_details=state.key_details,
+            history=state.history,
+            used_hints=state.hints_used,
+            llm_config=req.llm_config.model_dump()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成提示失败: {str(e)}")
+
+    state.hints_used += 1
+    state.round += 1  # 提示消耗1轮
+
+    # 记录历史
+    state.history.append({
+        "round": state.round,
+        "question": "【提示】",
+        "answer": hint,
+        "type": "提示",
+        "reasoning": "",
+        "is_hint": True,
+    })
+
+    if state.round >= state.max_rounds:
+        state.status = "lost"
+        await _save_game_end(SessionLocal(), state)
+
+    return {
+        "hint": hint,
+        "hints_used": state.hints_used,
+        "max_hints": state.max_hints,
+        "round": state.round,
+        "status": state.status,
+        "history": state.history,
+    }
+
+
 @app.post("/game/{session_id}/guess")
 async def guess_truth(session_id: str, req: GuessRequest, db: Session = Depends(get_db)):
     """玩家猜真相"""
@@ -303,6 +378,45 @@ async def guess_truth(session_id: str, req: GuessRequest, db: Session = Depends(
         "soup_base": state.soup_base if is_correct else None
     }
 
+@app.post("/game/{session_id}/review")
+async def review_game(session_id: str, req: ReviewRequest, db: Session = Depends(get_db)):
+    """复盘游戏"""
+    state = game_states.get(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="游戏不存在或已过期")
+
+    if state.status == "playing":
+        state.status = "revealed"
+        await _save_game_end(db, state)
+
+    try:
+        review = await llm_service.generate_review(
+            soup_surface=state.soup_surface,
+            soup_base=state.soup_base,
+            key_details=state.key_details,
+            history=state.history,
+            hints_used=state.hints_used,
+            status=state.status,
+            llm_config=req.llm_config.model_dump()
+        )
+    except Exception as e:
+        review = {
+            "total_rounds": state.round,
+            "hints_used": state.hints_used,
+            "highlights": "玩家积极提问，尝试了多种推理方向。",
+            "blind_spots": "部分关键线索未能及时发现，建议更仔细地分析汤面细节。",
+            "soup_base": state.soup_base,
+            "verdict": "继续努力，下次一定能更快破案！"
+        }
+
+    return {
+        **review,
+        "status": state.status,
+        "title": db.query(Puzzle).filter(Puzzle.id == state.puzzle_id).first().title if db.query(Puzzle).filter(Puzzle.id == state.puzzle_id).first() else "",
+        "soup_surface": state.soup_surface,
+    }
+
+
 @app.post("/game/{session_id}/reveal")
 async def reveal_answer(session_id: str, db: Session = Depends(get_db)):
     """揭晓汤底"""
@@ -335,7 +449,9 @@ def get_game_state(session_id: str):
         "max_rounds": state.max_rounds,
         "status": state.status,
         "history": state.history,
-        "mode": state.mode
+        "mode": state.mode,
+        "hints_used": state.hints_used,
+        "max_hints": state.max_hints,
     }
 
 @app.get("/game/{session_id}/history")

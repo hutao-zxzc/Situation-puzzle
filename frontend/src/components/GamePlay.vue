@@ -29,25 +29,40 @@
       </div>
 
       <div class="actions">
-        <button class="btn btn-primary" @click="$emit('newGame')">再来一局</button>
+        <button class="btn btn-primary" @click="$emit('review')">📋 查看复盘</button>
+        <button class="btn btn-secondary" @click="$emit('newGame')">再来一局</button>
       </div>
     </div>
 
     <!-- 问答区域 -->
-    <div v-else class="qa-section">
+    <div v-if="game.status === 'playing'" class="qa-section">
+      <!-- 新局引导 -->
+      <div v-if="isNewGame" class="guide-banner card">
+        <p>🎮 游戏开始！输入封闭式问题来推理真相。</p>
+        <p>💡 输入 <strong>【提示】</strong> 可获取 AI 模糊线索（限3次，消耗1轮）</p>
+        <p>🏁 输入 <strong>【复盘/汤底/结束】</strong> 结束本局并查看完整复盘</p>
+        <p class="spoiler-warning">🛡️ 游戏进行中禁止剧透，多局上下文隔离</p>
+      </div>
+
       <!-- 问答历史 -->
       <div class="history card" v-if="game.history?.length > 0">
         <h3 class="history-title">💬 问答记录</h3>
         <div class="history-list">
-          <div v-for="(item, idx) in game.history" :key="idx" class="history-item">
-            <div class="question">
-              <span class="q-mark">Q{{ item.round }}</span>
-              <span>{{ item.question }}</span>
+          <div v-for="(item, idx) in game.history" :key="idx" class="history-item" :class="{ 'hint-item': item.is_hint }">
+            <div v-if="item.is_hint" class="hint-bubble">
+              <span class="hint-label">💡 提示</span>
+              <p class="hint-text">{{ item.answer }}</p>
             </div>
-            <div class="answer">
-              <span class="tag" :class="getTagClass(item.type)">{{ item.type }}</span>
-              <span class="answer-text">{{ item.answer }}</span>
-            </div>
+            <template v-else>
+              <div class="question">
+                <span class="q-mark">Q{{ item.round }}</span>
+                <span>{{ item.question }}</span>
+              </div>
+              <div class="answer">
+                <span class="tag" :class="getTagClass(item.type)">{{ item.type }}</span>
+                <span class="answer-text">{{ item.answer }}</span>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -68,10 +83,16 @@
         </div>
 
         <div class="input-box">
+          <div class="input-hints-bar">
+            <span v-if="game.hints_used < game.max_hints" class="hint-available">
+              💡 提示剩余 {{ game.max_hints - game.hints_used }} 次
+            </span>
+            <span v-else class="hint-exhausted">💡 提示次数已用尽</span>
+          </div>
           <textarea
             v-if="inputMode === 'ask'"
             v-model="question"
-            placeholder="请输入你的问题...（如：死者是自杀吗？）"
+            placeholder="请输入你的问题...（输入【提示】获取线索，【复盘/汤底/结束】结束本局）"
             rows="2"
             @keydown.enter.prevent="submitAsk"
           ></textarea>
@@ -92,8 +113,11 @@
               <span v-if="loading" class="spinner-small"></span>
               <span v-else>{{ inputMode === 'ask' ? '提问' : '确认猜测' }}</span>
             </button>
-            <button class="btn btn-secondary" @click="$emit('reveal')" :disabled="loading">
-              📖 直接揭晓
+            <button class="btn btn-hint" @click="$emit('hint')" :disabled="loading || game.hints_used >= game.max_hints">
+              💡 提示
+            </button>
+            <button class="btn btn-secondary" @click="$emit('review')" :disabled="loading">
+              📋 复盘
             </button>
           </div>
         </div>
@@ -110,11 +134,20 @@ const props = defineProps({
   loading: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['ask', 'guess', 'reveal', 'newGame'])
+const emit = defineEmits(['ask', 'guess', 'reveal', 'hint', 'review', 'newGame'])
+
+// 监听 game 变化：换局时重置引导横幅
+import { watch } from 'vue'
+watch(() => props.game?.session_id, (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    isNewGame.value = true
+  }
+})
 
 const inputMode = ref('ask')
 const question = ref('')
 const guess = ref('')
+const isNewGame = ref(true)
 
 const canSubmit = computed(() => {
   if (inputMode.value === 'ask') return question.value.trim().length > 0
@@ -126,8 +159,37 @@ const gameBase = computed(() => {
 })
 
 function submitAsk() {
-  if (!question.value.trim() || props.loading) return
-  emit('ask', question.value.trim())
+  const q = question.value.trim()
+  if (!q || props.loading) return
+
+  // 检测关键词：提示
+  if (q === '提示' || q === '【提示】') {
+    isNewGame.value = false
+    emit('hint')
+    question.value = ''
+    return
+  }
+
+  // 检测关键词：复盘/汤底/结束
+  if (['复盘', '汤底', '结束', '【复盘】', '【汤底】', '【结束】'].includes(q)) {
+    isNewGame.value = false
+    emit('review')
+    question.value = ''
+    return
+  }
+
+  // 防剧透检测
+  if (props.game.status === 'playing') {
+    const spoilerWords = ['汤底', '真相', '答案', '原来', '完整', '解析']
+    if (spoilerWords.some(w => q.includes(w)) && !q.includes('?') && !q.includes('？')) {
+      alert('🛡️ 游戏进行中禁止剧透！请继续推理，或发送【复盘/汤底/结束】来结束本局。')
+      question.value = ''
+      return
+    }
+  }
+
+  isNewGame.value = false
+  emit('ask', q)
   question.value = ''
 }
 
@@ -374,5 +436,93 @@ function getTagClass(type) {
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 1s linear infinite;
+}
+
+/* 提示按钮 — 和复盘按钮完全一致，用更高优先级覆盖 */
+.input-actions .btn-hint {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #e0e6f0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  padding: 0.75rem 1.5rem !important;
+  border-radius: 8px !important;
+  font-size: 1rem !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: all 0.2s !important;
+  font-family: inherit !important;
+}
+
+.input-actions .btn-hint:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+.input-actions .btn-hint:disabled {
+  opacity: 0.4 !important;
+  cursor: not-allowed !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+  color: #8b9bb4 !important;
+}
+
+/* 提示次数状态栏 */
+.input-hints-bar {
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.hint-available {
+  color: #8b9bb4;
+}
+
+.hint-exhausted {
+  color: #ff6b6b;
+}
+
+/* 新局引导横幅 */
+.guide-banner {
+  background: rgba(0, 255, 200, 0.04);
+  border: 1px solid rgba(0, 255, 200, 0.1);
+  margin-bottom: 1rem;
+}
+
+.guide-banner p {
+  color: #a0aec0;
+  font-size: 0.88rem;
+  line-height: 1.7;
+  margin-bottom: 0.25rem;
+}
+
+.guide-banner p:last-child {
+  margin-bottom: 0;
+}
+
+.guide-banner .spoiler-warning {
+  color: #ffc107;
+  font-size: 0.8rem;
+  margin-top: 0.5rem;
+}
+
+/* 提示在历史记录中的样式 */
+.hint-item {
+  border-left-color: rgba(255, 193, 7, 0.4) !important;
+  background: rgba(255, 193, 7, 0.03) !important;
+}
+
+.hint-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.hint-label {
+  color: #ffc107;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.hint-text {
+  color: #e0e6f0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  font-style: italic;
 }
 </style>

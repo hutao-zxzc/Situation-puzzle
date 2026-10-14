@@ -28,6 +28,10 @@
         <li>最多 30 回合，猜中真相或揭晓汤底</li>
       </ol>
     </div>
+
+    <div class="about-link">
+      <span @click="$emit('about')">📖 关于海龟汤 · GitHub</span>
+    </div>
   </div>
 </template>
 
@@ -145,5 +149,21 @@
 
 .rules li {
   padding-left: 0.5rem;
+}
+
+.about-link {
+  text-align: center;
+  margin-top: 1.5rem;
+}
+
+.about-link span {
+  color: #4a5568;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.about-link span:hover {
+  color: #00ffc8;
 }
 </style>

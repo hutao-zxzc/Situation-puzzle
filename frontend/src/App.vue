@@ -12,7 +12,7 @@
     </header>
 
     <main class="app-main">
-      <ModeSelect v-if="currentView === 'mode'" @select="onModeSelect" />
+      <ModeSelect v-if="currentView === 'mode'" @select="onModeSelect" @about="currentView = 'about'" />
       <PuzzleList
         v-else-if="currentView === 'puzzles'"
         :puzzles="puzzles"
@@ -28,7 +28,13 @@
         @ask="onAsk"
         @guess="onGuess"
         @reveal="onReveal"
+        @hint="onHint"
+        @review="onReview"
         @newGame="currentView = 'mode'"
+      />
+      <AboutView
+        v-else-if="currentView === 'about'"
+        @back="currentView = 'mode'"
       />
     </main>
 
@@ -50,6 +56,7 @@ import ModeSelect from './components/ModeSelect.vue'
 import PuzzleList from './components/PuzzleList.vue'
 import GamePlay from './components/GamePlay.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import AboutView from './components/AboutView.vue'
 
 const API_BASE = '/api'
 
@@ -235,6 +242,50 @@ async function onReveal() {
     gameState.value = { ...gameState.value, ...result }
   } catch (e) {
     alert('揭晓失败：' + e.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function onHint() {
+  if (!checkSettings()) return
+  loading.value = true
+  try {
+    const res = await fetch(`${API_BASE}/game/${gameState.value.session_id}/hint`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(getLLMBody())
+    })
+    if (!res.ok) {
+      const err = await safeJson(res)
+      throw new Error(err.detail || '获取提示失败')
+    }
+    const result = await safeJson(res)
+    gameState.value = { ...gameState.value, ...result }
+  } catch (e) {
+    alert('获取提示失败：' + e.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function onReview() {
+  if (!checkSettings()) return
+  loading.value = true
+  try {
+    const res = await fetch(`${API_BASE}/game/${gameState.value.session_id}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(getLLMBody())
+    })
+    if (!res.ok) {
+      const err = await safeJson(res)
+      throw new Error(err.detail || '复盘失败')
+    }
+    const result = await safeJson(res)
+    gameState.value = { ...gameState.value, ...result, showReview: true }
+  } catch (e) {
+    alert('复盘失败：' + e.message)
   } finally {
     loading.value = false
   }

@@ -49,3 +49,5 @@ class GameState:
         self.start_time = datetime.utcnow()
         self.status = "playing"  # playing / won / lost / revealed
         self.final_guess = None
+        self.hints_used = 0
+        self.max_hints = 3
